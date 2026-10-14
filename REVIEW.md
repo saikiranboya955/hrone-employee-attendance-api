@@ -1,37 +1,186 @@
-# REVIEW.md
+<h1 style="color:#2E86C1;">📋 Starter Code Review (REVIEW.md)</h1>
+<p>Audit log of defects identified and resolved in starter <code>app/main.py</code> against <i>HROne Contract v2.0</i>:</p>
 
-List every defect you found in the starter `app/main.py` (helpers and endpoints). For each one:
+<table>
+  <thead>
+    <tr style="background-color:#F2F4F4;">
+      <th>#</th>
+      <th>Where (Function / Lines)</th>
+      <th>Defect</th>
+      <th>Failing Input / Symptom</th>
+      <th>How It Was Fixed</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>1</b></td>
+      <td><code>compute_late_minutes</code> (33–37)</td>
+      <td>Timezone mismatch; applied IST hour directly onto UTC datetime via <code>.replace()</code>.</td>
+      <td>Punch-in at 10:05 IST (04:35 UTC) yielded -4h 55m instead of 35 late minutes.</td>
+      <td>Converted <code>punch_in</code> to IST and constructed shift start in IST.</td>
+    </tr>
+    <tr>
+      <td><b>2</b></td>
+      <td><code>compute_late_minutes</code> (36–37)</td>
+      <td>Truncated elapsed seconds before checking <code>&gt; 10</code> grace period (R2).</td>
+      <td>Punch-in at <code>09:40:01</code> for <code>09:30</code> shift gave <code>0</code> instead of <code>10</code>.</td>
+      <td>Evaluated <code>elapsed_seconds &gt; 600</code> before floor division.</td>
+    </tr>
+    <tr>
+      <td><b>3</b></td>
+      <td><code>compute_work_hours</code> (41)</td>
+      <td>Python <code>round()</code> uses banker's rounding (round half to even) instead of half-up (R4).</td>
+      <td>Work duration of 2.525 hours rounded down to <code>2.52</code> instead of <code>2.53</code>.</td>
+      <td>Implemented <code>decimal.Decimal</code> with explicit <code>ROUND_HALF_UP</code>.</td>
+    </tr>
+    <tr>
+      <td><b>4</b></td>
+      <td><code>compute_overtime</code> (44–47)</td>
+      <td>Missing 30-minute qualification threshold (R3).</td>
+      <td>Punch-out 15 min after shift end returned <code>15</code> overtime minutes instead of <code>0</code>.</td>
+      <td>Returned overtime only if <code>diff_minutes &gt;= 30</code>, otherwise <code>0</code>.</td>
+    </tr>
+    <tr>
+      <td><b>5</b></td>
+      <td><code>compute_overtime</code> (44–47)</td>
+      <td>Overnight shifts (<code>shift_end &lt;= shift_start</code>) evaluated end on same calendar date.</td>
+      <td>22:00–06:00 shift with 06:40 punch-out computed &gt; 24 hours of overtime.</td>
+      <td>Added +1 calendar day to shift end when <code>shift_end &lt;= shift_start</code>.</td>
+    </tr>
+    <tr>
+      <td><b>6</b></td>
+      <td><code>compute_overtime</code> (46)</td>
+      <td>Naive and timezone-aware datetime subtraction.</td>
+      <td>Calling with naive DB datetime raised <code>TypeError</code>.</td>
+      <td>Enforced UTC awareness and converted both datetimes to IST.</td>
+    </tr>
+    <tr>
+      <td><b>7</b></td>
+      <td><code>health</code> (72–74)</td>
+      <td>Hardcoded <code>{"status": "ok"}</code> without testing MongoDB connectivity.</td>
+      <td>Returned <code>200</code> when MongoDB was stopped instead of required <code>503</code>.</td>
+      <td>Added <code>client.admin.command('ping')</code> inside try/except block.</td>
+    </tr>
+    <tr>
+      <td><b>8</b></td>
+      <td><code>create_employee</code> (79–83)</td>
+      <td>Check-then-insert race condition; lacked DB unique index on <code>emp_code</code>.</td>
+      <td>Concurrent <code>POST /employees</code> with duplicate <code>emp_code</code> created duplicates.</td>
+      <td>Added unique index on <code>employees.emp_code</code>; caught duplicate key -&gt; <code>409</code>.</td>
+    </tr>
+    <tr>
+      <td><b>9</b></td>
+      <td><code>create_employee</code> (82)</td>
+      <td><code>created_at</code> stored as naive local time and returned as ISO string.</td>
+      <td>Returned ISO string violating OpenAPI integer epoch milliseconds contract.</td>
+      <td>Stored UTC BSON datetime truncated to seconds; returned integer epoch ms.</td>
+    </tr>
+    <tr>
+      <td><b>10</b></td>
+      <td><code>EmployeeIn</code> (53–60)</td>
+      <td>Missing schema constraints; accepted identical shift start and end times.</td>
+      <td><code>shift_start: "09:30", shift_end: "09:30"</code> returned <code>201</code> instead of <code>422</code>.</td>
+      <td>Added regex patterns and validator requiring <code>shift_start != shift_end</code>.</td>
+    </tr>
+    <tr>
+      <td><b>11</b></td>
+      <td><code>list_employees</code> (93)</td>
+      <td>Pagination offset formula off-by-one: <code>skip = page * page_size</code>.</td>
+      <td><code>page=1&amp;page_size=20</code> skipped items 1–20 and returned 21–40.</td>
+      <td>Corrected offset formula to <code>skip = (page - 1) * page_size</code>.</td>
+    </tr>
+    <tr>
+      <td><b>12</b></td>
+      <td><code>list_employees</code> (94)</td>
+      <td>Total count ignored active filters, executing <code>count_documents({})</code> on collection.</td>
+      <td><code>GET /employees?department=Sales</code> returned total company headcount.</td>
+      <td>Updated to <code>db.employees.count_documents(q)</code>.</td>
+    </tr>
+    <tr>
+      <td><b>13</b></td>
+      <td><code>list_employees</code> (95)</td>
+      <td>Missing deterministic sort order mandated by contract.</td>
+      <td>Returned documents in natural MongoDB insertion order.</td>
+      <td>Added <code>.sort("emp_code", ASCENDING)</code>.</td>
+    </tr>
+    <tr>
+      <td><b>14</b></td>
+      <td><code>punch_in</code> (101)</td>
+      <td>Unchecked employee lookup result.</td>
+      <td>Calling <code>/punch-in</code> with unregistered <code>emp_code</code> raised unhandled 500.</td>
+      <td>Added check: <code>if not emp: raise HTTPException(404, "Employee not found")</code>.</td>
+    </tr>
+    <tr>
+      <td><b>15</b></td>
+      <td><code>punch_in</code> (104–105)</td>
+      <td>Check-then-insert race condition on attendance records.</td>
+      <td>Concurrent punch-ins for same employee/date both returned <code>201</code>.</td>
+      <td>Added unique compound index <code>attendance_logs.(emp_code, date)</code> -&gt; <code>409</code>.</td>
+    </tr>
+    <tr>
+      <td><b>16</b></td>
+      <td><code>punch_in</code> (102–103)</td>
+      <td>Attendance date ignored IST and overnight shift attribution (R1).</td>
+      <td>Overnight punch-in at 01:15 IST not attributed to shift start calendar date.</td>
+      <td>Attributed pre-shift-end overnight punches to previous calendar day.</td>
+    </tr>
+    <tr>
+      <td><b>17</b></td>
+      <td><code>punch_in</code> (118–121)</td>
+      <td>Returned MongoDB internal document ID (<code>doc["id"] = str(inserted_id)</code>).</td>
+      <td>Response schema contained unexpected <code>"id"</code> key and raw datetimes.</td>
+      <td>Formatted document strictly to <code>AttendanceRecord</code> schema without <code>_id</code>.</td>
+    </tr>
+    <tr>
+      <td><b>18</b></td>
+      <td><code>list_attendance</code> (144–147)</td>
+      <td>Loaded entire collection into Python memory with <code>list(find())</code>.</td>
+      <td>Triggered out-of-memory pressure and request timeouts on ~100k records.</td>
+      <td>Offloaded filtering, sorting (<code>date</code> desc, <code>emp_code</code> asc), and paging to DB cursor.</td>
+    </tr>
+    <tr>
+      <td><b>19</b></td>
+      <td><code>list_attendance</code> (136–141)</td>
+      <td>Missing date range order validation (<code>date_from &gt; date_to</code>).</td>
+      <td>Querying <code>date_from=2026-07-10&amp;date_to=2026-07-01</code> returned <code>200</code> with empty list.</td>
+      <td>Added explicit check raising <code>HTTPException(422)</code>.</td>
+    </tr>
+    <tr>
+      <td><b>20</b></td>
+      <td><code>build_department_trend_pipeline</code></td>
+      <td>Native <code>$round</code> banker's rounding and float precision drift on ties (R8).</td>
+      <td>Tie boundary <code>0.06245</code> rounded down to <code>0.0624</code> with native <code>$round</code>.</td>
+      <td>Replaced with exact base-10 Decimal128 conversion in aggregation pipeline.</td>
+    </tr>
+    <tr>
+      <td><b>21</b></td>
+      <td><code>monthly_analytics</code></td>
+      <td>Hardcoded calendar end date string <code>f"{month}-31"</code>.</td>
+      <td>Queries for Feb, Apr, Jun, Sep, Nov produced invalid calendar date bounds.</td>
+      <td>Added dynamic <code>get_month_range()</code> using <code>calendar.monthrange</code>.</td>
+    </tr>
+    <tr>
+      <td><b>22</b></td>
+      <td><code>explain_endpoint</code></td>
+      <td>Unhandled <code>Decimal128</code> BSON serialization in FastAPI response.</td>
+      <td><code>GET /admin/explain/department_trend</code> crashed FastAPI encoder with <code>500</code>.</td>
+      <td>Serialized using <code>json.loads(json_util.dumps(raw_explain))</code>.</td>
+    </tr>
+    <tr>
+      <td><b>23</b></td>
+      <td><code>build_department_trend_pipeline</code> (Stage 3)</td>
+      <td>Unindexed <code>{"$limit": 1}</code> in <code>$unionWith</code> caused <code>COLLSCAN</code> in executionStats.</td>
+      <td>Explain output revealed <code>COLLSCAN</code> on <code>employees</code>.</td>
+      <td>Added indexed <code>{"$match": {"emp_code": emp_codes[0]}}</code> before <code>$limit</code> -&gt; <code>IXSCAN: True, COLLSCAN: False</code>.</td>
+    </tr>
+  </tbody>
+</table>
 
-| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
-|---|---|---|---|---|
-| 1 | `compute_late_minutes` (lines 33–37) | Timezone mismatch and naive substitution. Calling `punch_in.replace(hour=h, minute=m)` blindly applies IST hour values onto a UTC datetime, causing elapsed time calculations to be off by 5 hours and 30 minutes. | Punch-in at 10:05 IST (`04:35 UTC`). Replacing hour with 9:30 produces `09:30 UTC`, resulting in negative 4 hours 55 minutes instead of 35 late minutes. | Converted `punch_in` to IST (`UTC+05:30`), constructed the shift start datetime in IST on the record's attendance date, and calculated the difference in seconds. |
-| 2 | `compute_late_minutes` (lines 36–37) | Grace period boundary logic defect. Truncates elapsed seconds before checking `> 10`. For an elapsed time of 10 minutes 1 second, `int(601 / 60)` yields `10`; evaluating `10 > 10` returns False, omitting late minutes. | Punching in at `09:40:01` for a `09:30` shift returned `0` instead of `10`, directly violating the R2 specification example. | Evaluated `elapsed_seconds > 600` first before computing `floor(elapsed_seconds / 60)`. |
-| 3 | `compute_work_hours` (line 41) | Uses Python built-in `round()`, which performs banker's rounding (round half to even) rather than arithmetic half-up rounding. | A work duration of 2.525 hours rounded to `2.52` instead of `2.53`, violating rule R4 ("half-up, not banker's rounding"). | Reimplemented work hours calculation using Python `decimal.Decimal` with explicit `ROUND_HALF_UP` quantization to 2 decimal places. |
-| 4 | `compute_overtime` (lines 44–47) | Missing 30-minute qualification threshold required by R3. Returns any positive minutes elapsed after shift end. | Punching out 15 minutes after shift end returned `15` overtime minutes instead of `0`. | Added conditional check returning `overtime_minutes` only if `diff_minutes >= 30`, otherwise `0`. |
-| 5 | `compute_overtime` (lines 44–47) | Fails on overnight shifts (`shift_end <= shift_start`). Sets shift end calendar date to `date_str` rather than the following day. | For a 22:00–06:00 overnight shift on `2026-07-06`, punch-out at 06:40 on `2026-07-07` compared against `2026-07-06 06:00`, incorrectly calculating > 24 hours of overtime. | Checked if `shift_end <= shift_start`; if so, added 1 calendar day to the shift end datetime. |
-| 6 | `compute_overtime` (line 46) | Subtraction of offset-naive and offset-aware datetimes. `end` is assigned `tzinfo=IST`, but `punch_out` from MongoDB may be naive. | Invoking `compute_overtime` with a naive datetime raised `TypeError: can't subtract offset-naive and offset-aware datetimes`. | Enforced UTC timezone awareness on database retrieval and converted both instances to IST before duration subtraction. |
-| 7 | `health` (lines 72–74) | Unconditionally returns `{"status": "ok"}` without testing MongoDB connectivity. Contract requires 503 when database does not answer. | Stopping MongoDB and calling `GET /health` returned `200` instead of `503`. | Added `client.admin.command('ping')` inside a try-catch block, raising `HTTPException(503, "Database unavailable")` upon failure. |
-| 8 | `create_employee` (lines 79–83) | Check-then-insert race condition. Lacks database-level uniqueness enforcement on `emp_code`. | Dispatching two concurrent `POST /employees` requests with identical `emp_code` created duplicate employee documents. | Created a unique index on `employees.emp_code` at application startup and caught `DuplicateKeyError` to return `409 Conflict`. |
-| 9 | `create_employee` (line 82) & Models | `created_at` stored as naive local time and returned as datetime object rather than integer epoch milliseconds. | Client received ISO string or local timestamp violating the OpenAPI `EpochMillis` contract specification. | Stored BSON UTC datetime truncated to seconds and converted to integer epoch milliseconds in the API response. |
-| 10 | `EmployeeIn` model (lines 53–60) | Missing schema constraints: lacks regex validation for `emp_code`, email, and shift times; fails to reject identical shift start and end times. | `POST /employees` with `shift_start: "09:30", shift_end: "09:30"` returned `201 Created` instead of `422 Unprocessable Entity`. | Added regex patterns to fields and implemented model validation verifying `shift_start != shift_end`. |
-| 11 | `list_employees` (line 93) | Pagination calculation off-by-one: `skip = page * page_size`. For page 1, skips the first 20 records. | `GET /employees?page=1&page_size=20` returned records 21–40; records 1–20 were completely omitted. | Corrected offset formula to `skip = (page - 1) * page_size`. |
-| 12 | `list_employees` (line 94) | Total count ignored active query filters, executing `count_documents({})` across the entire collection. | `GET /employees?department=Sales` returned `total: 6` (total company size) even when only 2 sales employees existed. | Updated count operation to `db.employees.count_documents(q)`. |
-| 13 | `list_employees` (line 95) | Missing sort order. OpenAPI contract mandates sorting by `emp_code` ascending. | Endpoint returned documents in non-deterministic natural MongoDB insertion order. | Added `.sort("emp_code", ASCENDING)` to cursor. |
-| 14 | `punch_in` (line 101) | Unchecked employee existence. If `find_one` returns `None`, accessing `emp["shift_start"]` raises an unhandled exception. | Calling `POST /attendance/punch-in` with an unregistered `emp_code` returned `500 Internal Server Error` instead of `404 Not Found`. | Added check: `if not emp: raise HTTPException(404, "Employee not found")`. |
-| 15 | `punch_in` (lines 104–105) | Check-then-insert race condition. Two concurrent punch-ins for the same employee and date could both pass validation. | Concurrent punch-ins for the same employee on the same date both returned `201 Created`. | Created a compound unique index on `attendance_logs(emp_code, date)` and caught `DuplicateKeyError` to return `409 Conflict`. |
-| 16 | `punch_in` (lines 102–103) | Attendance date calculation ignored IST timezone and overnight shift boundaries (R1). | Punch-in at `00:30 UTC` (06:00 IST) got wrong calendar date. Overnight punch-ins before shift end were not attributed to previous day. | Converted timestamps to IST and applied overnight shift previous-day calendar attribution per R1. |
-| 17 | `punch_in` (lines 118–121) | Returned internal document identifier `doc["id"] = str(res.inserted_id)`. Attendance records have no ID in the contract. | Response schema included unexpected `"id"` key and raw datetime objects instead of epoch milliseconds. | Serialized documents strictly conforming to the `AttendanceRecord` schema without ID fields. |
-| 18 | `list_attendance` (lines 144–147) | Scalability defect: loads entire collection into Python memory with `list(db.attendance_logs.find(q))` and sorts in Python. | On ~100k records, the endpoint would trigger severe memory pressure, high latency, and request timeouts. | Offloaded filtering, sorting (`[("date", -1), ("emp_code", 1)]`), and pagination (`.skip().limit()`) directly to MongoDB. |
-| 19 | `list_attendance` (lines 136–141) | Missing range validation for `date_from > date_to`. | Querying `date_from=2026-07-10&date_to=2026-07-01` returned `200 OK` with an empty list instead of `422 Unprocessable Entity`. | Added explicit validation check raising `HTTPException(422)` when `date_from > date_to`. |
-| 20 | `build_department_trend_pipeline` & `mongo_round_half_up` | Banker's rounding in MongoDB native `$round` and float precision drift with arbitrary epsilon heuristic (`+0.5000000001`). Values right below tie (e.g. `0.06244999999999`) rounded up to `0.0625`, while `0.06245` rounded down to `0.0624`. | Testing tie boundary `0.06245` against R8 specification produced `0.0624` with native `$round`. Adding an arbitrary float epsilon incorrectly pushed `0.06244999999999` to `0.0625`. | Replaced heuristic with exact base-10 Decimal128 conversion (`$toString` + `$toDecimal` + `$multiply` + `0.5` + `$floor` + `$divide` + `$toDouble`), producing true arithmetic half-up rounding. |
-| 21 | `monthly_analytics` (end_date string formatting) | Hardcoded calendar end date `f"{month}-31"`. Months with fewer than 31 days (Feb, Apr, Jun, Sep, Nov) generated invalid date bounds. | Querying February or April monthly stats with date filters could result in invalid calendar comparisons or mismatched day counts. | Added dynamic `get_month_range()` using Python's `calendar.monthrange(year, month)` to determine true month end date. |
-| 22 | `explain_endpoint` (lines 1061–1068) | Unhandled `Decimal128` serialization in FastAPI response. Using `json_util.loads()` retained PyMongo `bson.decimal128.Decimal128` objects in executionStats, crashing FastAPI's `jsonable_encoder`. | Invoking `GET /admin/explain/department_trend` on MongoDB Atlas returned `500 Internal Server Error: TypeError: 'Decimal128' object is not iterable`. | Switched to standard `json.loads(json_util.dumps(raw_explain))` so BSON objects are converted into standard JSON-compliant primitives. |
-| 23 | `build_department_trend_pipeline` (Stage 3 `$unionWith`) | Unindexed seed query in `$unionWith` causing `COLLSCAN` in executionStats. Executing `{"$limit": 1}` on `employees` without an index match triggered a collection scan. | `GET /admin/explain/department_trend` executionStats showed `COLLSCAN` inside the `$unionWith` pipeline stage, violating the contract requirement for index-only scans on ~100k datasets. | Added indexed `{"$match": {"emp_code": emp_codes[0]}}` before `$limit`, leveraging the `emp_code_1` unique index to guarantee `IXSCAN` and eliminate `COLLSCAN`. |
+---
 
-
-
-## What was examined and determined NOT to be a defect
-
-1. **Synchronous PyMongo inside FastAPI endpoints:** Using standard `def` endpoint functions with PyMongo is standard FastAPI architecture. FastAPI automatically runs synchronous `def` endpoints on an external threadpool (anyio worker threads), preventing event-loop blockage without requiring asynchronous driver complexity.
-2. **Environment variable loading fallback:** Calling `load_dotenv()` with default `override=False` correctly ensures real system environment variables injected by test runners take precedence over local `.env` files.
-3. **Pydantic v2 `model_dump()` usage:** Using `model_dump()` rather than deprecated `dict()` is modern and correct in Pydantic v2.
+<h2 style="color:#27AE60;">✅ Examined &amp; Determined NOT to be Defects</h2>
+<ul>
+  <li><b>Synchronous PyMongo with FastAPI:</b> Using standard <code>def</code> endpoints on FastAPI's external AnyIO worker threadpool prevents event-loop blocking without async complexity.</li>
+  <li><b>Environment Variable Fallback:</b> <code>load_dotenv(override=False)</code> correctly prioritizes real injected system environment variables over local <code>.env</code> values.</li>
+  <li><b>Pydantic v2 <code>model_dump()</code>:</b> Using <code>model_dump()</code> instead of deprecated <code>dict()</code> is modern and expected in Pydantic v2.</li>
+</ul>
