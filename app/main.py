@@ -29,7 +29,7 @@ load_dotenv(override=False)
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB = os.getenv("MONGO_DB", "attendance_db")
 
-client = MongoClient(MONGO_URI, tz_aware=True, serverSelectionTimeoutMS=2000)
+client = MongoClient(MONGO_URI, tz_aware=True, serverSelectionTimeoutMS=5000)
 db = client[MONGO_DB]
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -521,10 +521,12 @@ def build_department_trend_pipeline(
             }
         },
         # Stage 3: Database-side guarantee of at least one seed document for $densify even if 0 logs matched
+        # Uses an indexed match on emp_code to ensure IXSCAN and eliminate COLLSCAN from executionStats
         {
             "$unionWith": {
                 "coll": "employees",
                 "pipeline": [
+                    {"$match": {"emp_code": emp_codes[0] if emp_codes else {"$exists": True}}},
                     {"$limit": 1},
                     {
                         "$project": {
@@ -1226,6 +1228,8 @@ def explain_endpoint(
     elif endpoint == "department_trend":
         if not department or not from_date or not to_date:
             raise HTTPException(status_code=422, detail="department, from, and to are required")
+        if db.employees.count_documents({"department": department}) == 0:
+            raise HTTPException(status_code=404, detail="Department not found")
         dept_employees = list(db.employees.find({"department": department}, {"_id": 0, "emp_code": 1, "joined_on": 1}))
         emp_codes = [e["emp_code"] for e in dept_employees]
         dept_joined_dates = [e["joined_on"] for e in dept_employees]

@@ -9,8 +9,11 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+import warnings
+warnings.filterwarnings("ignore", message=".*starlette.testclient.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 import mongomock
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
 import app.main as main_mod
 
@@ -201,7 +204,8 @@ def t_pipeline_structure():
     # Stage 3: $unionWith seed document
     union_stage = pipeline[2]["$unionWith"]
     assert union_stage["coll"] == "employees"
-    seed_proj = union_stage["pipeline"][1]["$project"]
+    assert union_stage["pipeline"][0]["$match"]["emp_code"] == "EMP0001"
+    seed_proj = union_stage["pipeline"][-1]["$project"]
     assert seed_proj["_id"] == {"$literal": from_date}
     assert seed_proj["present_count"] == {"$literal": 0.0}
     assert seed_proj["late_count"] == {"$literal": 0}
@@ -289,6 +293,11 @@ def t25():
     res = tc.get("/admin/explain/non_existent")
     assert res.status_code == 404
 record_test("test_explain_unknown_endpoint", "Contract: Explain 404", t25)
+
+def t25b():
+    res = tc.get("/admin/explain/department_trend?department=NonExistentDept&from=2026-07-06&to=2026-07-08")
+    assert res.status_code == 404
+record_test("test_explain_unknown_department", "Contract: Explain Unknown Dept 404", t25b)
 
 
 # --------------------------------------------------------------------------- #
@@ -638,114 +647,292 @@ try:
     main_mod.db = real_db
     tc_real = TestClient(main_mod.app, raise_server_exceptions=False)
 
-    def t_real_health():
-        res = tc_real.get("/health")
-        assert res.status_code == 200
-        assert res.json() == {"status": "ok"}
-    record_test("test_live_atlas_health", "Live Atlas: GET /health (200)", t_real_health)
+    # Safe test employee cleanup helper
+    test_codes = ["EMP7777", "EMP9001", "EMP9002", "EMP9003", "EMP9004", "EMP9005"]
 
-    def t_real_indexes():
-        emp_indexes = real_db.employees.index_information()
-        att_indexes = real_db.attendance_logs.index_information()
-        assert "emp_code_1" in emp_indexes and emp_indexes["emp_code_1"].get("unique") is True
-        assert "emp_code_1_date_1" in att_indexes and att_indexes["emp_code_1_date_1"].get("unique") is True
-    record_test("test_live_atlas_indexes", "Live Atlas: Unique Indexes Active", t_real_indexes)
+    def cleanup_test_data():
+        for code in test_codes:
+            real_db.employees.delete_many({"emp_code": code})
+            real_db.attendance_logs.delete_many({"emp_code": code})
 
-    def t_real_crud_lifecycle():
-        # Clean up any leftover test data
-        test_code = "EMP7777"
-        real_db.employees.delete_many({"emp_code": test_code})
-        real_db.attendance_logs.delete_many({"emp_code": test_code})
+    # Pre-test cleanup
+    cleanup_test_data()
 
-        try:
+    try:
+        def t_real_health():
+            res = tc_real.get("/health")
+            assert res.status_code == 200
+            assert res.json() == {"status": "ok"}
+        record_test("test_live_atlas_health", "Live Atlas: GET /health (200)", t_real_health)
+
+        def t_real_indexes():
+            emp_indexes = real_db.employees.index_information()
+            att_indexes = real_db.attendance_logs.index_information()
+            assert "emp_code_1" in emp_indexes and emp_indexes["emp_code_1"].get("unique") is True
+            assert "emp_code_1_date_1" in att_indexes and att_indexes["emp_code_1_date_1"].get("unique") is True
+        record_test("test_live_atlas_indexes", "Live Atlas: Unique Indexes Active", t_real_indexes)
+
+        def t_real_scenario_1_daytime_crud():
+            r1_code = "EMP9001"
             # 1. Create employee
-            create_res = tc_real.post("/employees", json={
-                "emp_code": test_code,
-                "name": "Integration Tester",
-                "email": "tester@example.com",
-                "department": "Engineering",
+            emp_payload = {
+                "emp_code": r1_code,
+                "name": "Aarav Sharma",
+                "email": "aarav.sharma@testcorp.com",
+                "department": "QA_Engineering",
+                "shift_start": "09:30",
+                "shift_end": "18:30",
+                "joined_on": "2026-07-01",
+            }
+            res_c = tc_real.post("/employees", json=emp_payload)
+            assert res_c.status_code == 201
+
+            # Duplicate employee -> 409
+            assert tc_real.post("/employees", json=emp_payload).status_code == 409
+
+            # Listing filter
+            res_l = tc_real.get("/employees?department=QA_Engineering&page=1&page_size=20")
+            assert res_l.status_code == 200
+            assert any(e["emp_code"] == r1_code for e in res_l.json().get("items", []))
+
+            # 2. Punch-in: 09:28 IST (on-time, late_minutes=0)
+            p_in_time = 1783310280000
+            res_in = tc_real.post("/attendance/punch-in", json={"emp_code": r1_code, "punched_at": p_in_time, "status": "PRESENT"})
+            assert res_in.status_code == 201
+            assert res_in.json()["date"] == "2026-07-06"
+            assert res_in.json()["late_minutes"] == 0
+
+            # Duplicate punch-in -> 409
+            assert tc_real.post("/attendance/punch-in", json={"emp_code": r1_code, "punched_at": p_in_time + 60000}).status_code == 409
+
+            # 3. Punch-out: 19:15 IST (overtime 45m, work hours 9.78, half_day False)
+            p_out_time = 1783345500000
+            res_out = tc_real.post("/attendance/punch-out", json={"emp_code": r1_code, "punched_at": p_out_time})
+            assert res_out.status_code == 200
+            d_out = res_out.json()
+            assert d_out["work_hours"] == 9.78
+            assert d_out["overtime_minutes"] == 45
+            assert d_out["half_day"] is False
+
+            # Duplicate punch-out -> 409
+            assert tc_real.post("/attendance/punch-out", json={"emp_code": r1_code, "punched_at": p_out_time + 1000}).status_code == 409
+
+            # 4. Regularize patch with audit trail -> 200
+            res_reg = tc_real.patch(f"/attendance/{r1_code}/2026-07-06", json={
+                "punch_out": 1783346400000,
+                "reason": "Turnstile biometric adjustment",
+                "regularized_by": "hr.manager",
+            })
+            assert res_reg.status_code == 200
+            d_reg = res_reg.json()
+            assert d_reg["work_hours"] == 10.03
+            assert d_reg["overtime_minutes"] == 60
+            assert len(d_reg["history"]) == 1
+            assert d_reg["history"][0]["by"] == "hr.manager"
+
+            # 5. Monthly stats
+            res_m = tc_real.get(f"/analytics/employees/{r1_code}/monthly?month=2026-07")
+            assert res_m.status_code == 200
+            assert res_m.json()["working_days"] == 23
+            assert res_m.json()["attendance_pct"] == 4.35
+        record_test("test_live_atlas_scenario_1_daytime_crud", "Live Atlas: S1 Daytime Shift, Overtime & Audit Trail", t_real_scenario_1_daytime_crud)
+
+        def t_real_scenario_2_half_day():
+            r2_code = "EMP9002"
+            tc_real.post("/employees", json={
+                "emp_code": r2_code,
+                "name": "Bhavna Patel",
+                "email": "bhavna.patel@testcorp.com",
+                "department": "QA_Engineering",
                 "shift_start": "09:30",
                 "shift_end": "18:30",
                 "joined_on": "2026-07-01",
             })
-            assert create_res.status_code == 201
 
-            # 2. Duplicate employee -> 409
-            dup_res = tc_real.post("/employees", json={
-                "emp_code": test_code,
-                "name": "Integration Tester",
-                "email": "tester@example.com",
-                "department": "Engineering",
+            # Punch-in: 09:41 IST (> 10m grace -> late_minutes = 11)
+            res_in = tc_real.post("/attendance/punch-in", json={"emp_code": r2_code, "punched_at": 1783397460000, "status": "PRESENT"})
+            assert res_in.status_code == 201
+            assert res_in.json()["late_minutes"] == 11
+
+            # Punch-out: 13:45 IST (4.07h worked < 4.50 -> half_day = True)
+            res_out = tc_real.post("/attendance/punch-out", json={"emp_code": r2_code, "punched_at": 1783412100000})
+            assert res_out.status_code == 200
+            assert res_out.json()["work_hours"] == 4.07
+            assert res_out.json()["half_day"] is True
+            assert res_out.json()["overtime_minutes"] == 0
+
+            # Regularize status to WFH
+            res_reg = tc_real.patch(f"/attendance/{r2_code}/2026-07-07", json={
+                "status": "WFH",
+                "reason": "Switched to remote for the afternoon",
+                "regularized_by": "team.lead",
+            })
+            assert res_reg.status_code == 200
+            assert res_reg.json()["status"] == "WFH"
+
+            # Monthly stats: half day counts as 0.5 present day
+            res_m = tc_real.get(f"/analytics/employees/{r2_code}/monthly?month=2026-07")
+            assert res_m.status_code == 200
+            assert res_m.json()["present_days"] == 0.5
+            assert res_m.json()["attendance_pct"] == 2.17
+        record_test("test_live_atlas_scenario_2_half_day", "Live Atlas: S2 Late Arrival & Half-Day (0.5 Present)", t_real_scenario_2_half_day)
+
+        def t_real_scenario_3_boundaries_and_negative_patch():
+            r3_code = "EMP9003"
+            tc_real.post("/employees", json={
+                "emp_code": r3_code,
+                "name": "Chetan Verma",
+                "email": "chetan.verma@testcorp.com",
+                "department": "QA_Beta",
                 "shift_start": "09:30",
                 "shift_end": "18:30",
                 "joined_on": "2026-07-01",
             })
-            assert dup_res.status_code == 409
 
-            # 3. Punch-in -> 201
-            p_in_res = tc_real.post("/attendance/punch-in", json={
-                "emp_code": test_code,
-                "punched_at": 1783310280000,
-                "status": "PRESENT"
+            # Punch-in: exactly 09:40:00 IST (10:00 elapsed -> not strictly > 10:00 -> late_minutes = 0)
+            res_in = tc_real.post("/attendance/punch-in", json={"emp_code": r3_code, "punched_at": 1783483800000})
+            assert res_in.status_code == 201
+            assert res_in.json()["late_minutes"] == 0
+
+            # Punch-out: 18:50:00 IST (20 min overtime < 30 min threshold -> overtime_minutes = 0)
+            res_out = tc_real.post("/attendance/punch-out", json={"emp_code": r3_code, "punched_at": 1783516800000})
+            assert res_out.status_code == 200
+            assert res_out.json()["overtime_minutes"] == 0
+            assert res_out.json()["work_hours"] == 9.17
+
+            # Negative regularization tests
+            # 1. No-op 422
+            res_noop = tc_real.patch(f"/attendance/{r3_code}/2026-07-08", json={
+                "punch_out": 1783516800000,
+                "reason": "No changes made",
+                "regularized_by": "admin",
             })
-            assert p_in_res.status_code == 201
-            att_date = p_in_res.json()["date"]
+            assert res_noop.status_code == 422
 
-            # 4. Duplicate punch-in -> 409
-            dup_in_res = tc_real.post("/attendance/punch-in", json={
-                "emp_code": test_code,
-                "punched_at": 1783310280000 + 1000,
-                "status": "PRESENT"
+            # 2. Setting ABSENT with punch times 422
+            res_abs = tc_real.patch(f"/attendance/{r3_code}/2026-07-08", json={
+                "status": "ABSENT",
+                "punch_out": 1783516800000,
+                "reason": "Bad payload",
+                "regularized_by": "admin",
             })
-            assert dup_in_res.status_code == 409
+            assert res_abs.status_code == 422
 
-            # 5. Punch-out -> 200
-            p_out_res = tc_real.post("/attendance/punch-out", json={
-                "emp_code": test_code,
-                "punched_at": 1783343100000
+            # 3. Punch_out before punch_in 422
+            res_inv = tc_real.patch(f"/attendance/{r3_code}/2026-07-08", json={
+                "punch_out": 1783483800000 - 1000,
+                "reason": "Negative duration",
+                "regularized_by": "admin",
             })
-            assert p_out_res.status_code == 200
+            assert res_inv.status_code == 422
+        record_test("test_live_atlas_scenario_3_boundaries_and_negative_patch", "Live Atlas: S3 Boundaries & Negative Regularization", t_real_scenario_3_boundaries_and_negative_patch)
 
-            # 6. Duplicate punch-out -> 409
-            dup_out_res = tc_real.post("/attendance/punch-out", json={
-                "emp_code": test_code,
-                "punched_at": 1783343100000 + 1000
+        def t_real_scenario_4_overnight():
+            r4_code = "EMP9004"
+            tc_real.post("/employees", json={
+                "emp_code": r4_code,
+                "name": "Divya Nair",
+                "email": "divya.nair@testcorp.com",
+                "department": "QA_Beta",
+                "shift_start": "22:00",
+                "shift_end": "06:00",
+                "joined_on": "2026-07-01",
             })
-            assert dup_out_res.status_code == 409
 
-            # 7. Regularize patch with audit trail -> 200
-            reg_res = tc_real.patch(f"/attendance/{test_code}/{att_date}", json={
-                "punch_out": 1783345200000,
-                "reason": "Live test regularization",
-                "regularized_by": "qa.engineer"
+            # Punch-in 21:55 on 2026-07-09 -> date = 2026-07-09
+            res_in = tc_real.post("/attendance/punch-in", json={"emp_code": r4_code, "punched_at": 1783614300000, "status": "PRESENT"})
+            assert res_in.status_code == 201
+            assert res_in.json()["date"] == "2026-07-09"
+            assert res_in.json()["late_minutes"] == 0
+
+            # Punch-out 06:40 next morning -> 40m overtime past 06:00 end, 8.75 work hours
+            res_out = tc_real.post("/attendance/punch-out", json={"emp_code": r4_code, "punched_at": 1783645800000})
+            assert res_out.status_code == 200
+            d_out = res_out.json()
+            assert d_out["work_hours"] == 8.75
+            assert d_out["overtime_minutes"] == 40
+            assert d_out["half_day"] is False
+        record_test("test_live_atlas_scenario_4_overnight", "Live Atlas: S4 Overnight Cross-Midnight Shift & Overtime", t_real_scenario_4_overnight)
+
+        def t_real_scenario_5_mid_month_and_aggregations():
+            r5_code = "EMP9005"
+            tc_real.post("/employees", json={
+                "emp_code": r5_code,
+                "name": "Eshwar Reddy",
+                "email": "eshwar.reddy@testcorp.com",
+                "department": "QA_Beta",
+                "shift_start": "09:30",
+                "shift_end": "18:30",
+                "joined_on": "2026-07-15",
             })
-            assert reg_res.status_code == 200
-            doc = reg_res.json()
-            assert len(doc["history"]) == 1
-            assert doc["history"][0]["by"] == "qa.engineer"
-        finally:
-            real_db.employees.delete_many({"emp_code": test_code})
-            real_db.attendance_logs.delete_many({"emp_code": test_code})
-    record_test("test_live_atlas_crud_lifecycle", "Live Atlas: Full CRUD, Concurrency & Audit Trail", t_real_crud_lifecycle)
 
-    def t_real_aggregation_and_explain():
-        # Live explain test on department_trend
-        res_exp = tc_real.get("/admin/explain/department_trend?department=Engineering&from=2026-07-06&to=2026-07-08")
-        assert res_exp.status_code == 200
-        explain_json = res_exp.json()
-        raw_stages = explain_json["explain"].get("stages", [])
-        assert len(raw_stages) > 0
-        cursor_stage = raw_stages[0].get("$cursor", {})
-        winning_plan = cursor_stage.get("queryPlanner", {}).get("winningPlan", {})
-        # Find IXSCAN in the plan
-        plan_str = str(winning_plan)
-        assert "IXSCAN" in plan_str
-        assert "emp_code_1_date_1" in plan_str
-    record_test("test_live_atlas_explain_ixscan", "Live Atlas: Explain ExecutionStats Confirms IXSCAN", t_real_aggregation_and_explain)
+            # Punch-in 10:15 IST (45m late)
+            res_in = tc_real.post("/attendance/punch-in", json={"emp_code": r5_code, "punched_at": 1784090700000})
+            assert res_in.status_code == 201
+            assert res_in.json()["late_minutes"] == 45
+
+            # Punch-out 18:30 IST (8.25 hrs, 0 overtime)
+            res_out = tc_real.post("/attendance/punch-out", json={"emp_code": r5_code, "punched_at": 1784120400000})
+            assert res_out.status_code == 200
+            assert res_out.json()["work_hours"] == 8.25
+            assert res_out.json()["overtime_minutes"] == 0
+
+            # Mid-month joiner monthly analytics (13 working days, 7.69%)
+            res_m = tc_real.get(f"/analytics/employees/{r5_code}/monthly?month=2026-07")
+            assert res_m.status_code == 200
+            assert res_m.json()["working_days"] == 13
+            assert res_m.json()["attendance_pct"] == 7.69
+
+            # Department summary on QA_Beta (EMP9003, EMP9004, EMP9005 -> headcount 3, late 45)
+            res_dept = tc_real.get("/analytics/departments/summary?month=2026-07&department=QA_Beta")
+            assert res_dept.status_code == 200
+            beta_summary = next(d for d in res_dept.json()["items"] if d["department"] == "QA_Beta")
+            assert beta_summary["headcount"] == 3
+            assert beta_summary["total_late_minutes"] == 45
+
+            # Late leaderboard on QA_Beta (EMP9005 rank 1)
+            res_lead = tc_real.get("/analytics/leaderboard/late?month=2026-07&department=QA_Beta")
+            assert res_lead.status_code == 200
+            items_lead = res_lead.json()["items"]
+            assert len(items_lead) >= 1
+            assert items_lead[0]["emp_code"] == r5_code
+            assert items_lead[0]["rank"] == 1
+            assert items_lead[0]["total_late_minutes"] == 45
+
+            # Department trend with gap-filling (9 calendar days) and dynamic headcount
+            res_trend = tc_real.get("/analytics/departments/QA_Beta/trend?from=2026-07-08&to=2026-07-16")
+            assert res_trend.status_code == 200
+            items_trend = res_trend.json()["items"]
+            assert len(items_trend) == 9
+            t_14 = next(it for it in items_trend if it["date"] == "2026-07-14")
+            t_15 = next(it for it in items_trend if it["date"] == "2026-07-15")
+            assert t_14["headcount"] == 2
+            assert t_15["headcount"] == 3
+        record_test("test_live_atlas_scenario_5_mid_month_and_aggregations", "Live Atlas: S5 Mid-Month Joiner & Multi-Doc Aggregations", t_real_scenario_5_mid_month_and_aggregations)
+
+        def t_real_explain_all_endpoints():
+            explain_endpoints = [
+                ("attendance_list", "/admin/explain/attendance_list?emp_code=EMP9001&date_from=2026-07-01&date_to=2026-07-31"),
+                ("employee_monthly", "/admin/explain/employee_monthly?emp_code=EMP9001&month=2026-07"),
+                ("department_summary", "/admin/explain/department_summary?month=2026-07&department=QA_Beta"),
+                ("late_leaderboard", "/admin/explain/late_leaderboard?month=2026-07&limit=10"),
+                ("department_trend", "/admin/explain/department_trend?department=QA_Beta&from=2026-07-08&to=2026-07-16"),
+            ]
+            for ep_name, ep_url in explain_endpoints:
+                res_exp = tc_real.get(ep_url)
+                assert res_exp.status_code == 200, f"Explain failed for {ep_name}: {res_exp.text}"
+                exp_body = str(res_exp.json()["explain"])
+                assert "IXSCAN" in exp_body, f"Expected IXSCAN in explain for {ep_name}"
+                assert "COLLSCAN" not in exp_body, f"Unexpected COLLSCAN in explain for {ep_name}"
+        record_test("test_live_atlas_explain_all_endpoints", "Live Atlas: Explain Verifies IXSCAN & Zero COLLSCAN Across All 5 Endpoints", t_real_explain_all_endpoints)
+
+    finally:
+        cleanup_test_data()
 
     # Restore mock environment for consistency
     main_mod.client = orig_client
     main_mod.db = orig_db
+
 except Exception as e:
     print(f"  [UNVERIFIED] Real MongoDB Atlas NOT available: {e}")
     print("  Notice: Database integration tests, live concurrency races, and live explain plans")
