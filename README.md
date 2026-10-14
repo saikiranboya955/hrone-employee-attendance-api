@@ -28,21 +28,36 @@ Developed for <i>HROne Engineering Assignment Contract v2.0</i>.</p>
   <tr><td>GET</td><td>/analytics/leaderboard/late</td><td>Late arrivals leaderboard</td></tr>
 </table>
 
-<h2 style="color:#9B59B6;">⚡ Setup</h2>
+<h2 style="color:#27AE60;">🛠️ Setup & Configuration</h2>
+
+<h3 style="color:#2980B9;">📋 Prerequisites</h3>
+<ul>
+  <li>Python 3.11 or higher</li>
+  <li>MongoDB instance (local or MongoDB Atlas cluster)</li>
+</ul>
+
+<h3 style="color:#E67E22;">📥 Installation</h3>
 <pre>
 git clone https://github.com/saikiranboya955/hrone-employee-attendance-api.git
 cd hrone-employee-attendance-api
+
 python -m venv .venv
-source .venv/bin/activate   # Linux/macOS
-.venv\Scripts\Activate.ps1  # Windows
+
+# On Linux/macOS:
+source .venv/bin/activate
+
+# On Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 </pre>
 
-<h3 style="color:#F39C12;">.env file</h3>
+<h3 style="color:#9B59B6;">⚙️ Environment Configuration</h3>
 <pre>
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=attendance_db
 </pre>
+<p><i>💡 Tip: Use your own MongoDB Atlas URI if deploying remotely. Never commit <code>.env</code> files.</i></p>
 
 <h2 style="color:#C0392B;">▶️ Run</h2>
 <pre>
